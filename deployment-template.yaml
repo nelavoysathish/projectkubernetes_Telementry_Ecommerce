@@ -1,0 +1,234 @@
+---
+# Multi-Environment Kustomization Base
+# This file serves as the template for all environments
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: otel-demo-${ENVIRONMENT:-dev}
+  labels:
+    app: frontend
+    version: v1
+    environment: ${ENVIRONMENT:-dev}
+spec:
+  replicas: ${REPLICAS:-1}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        version: v1
+        environment: ${ENVIRONMENT:-dev}
+        prometheus-sidecar: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: otel-demo-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - frontend
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: frontend
+        image: ${REGISTRY_URL:-myregistry.azurecr.io}/frontend:${IMAGE_TAG:-latest}
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        env:
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: env-config
+              key: ENVIRONMENT
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: env-secrets
+              key: OTEL_EXPORTER_OTLP_ENDPOINT
+        - name: OTEL_SERVICE_NAME
+          value: "frontend"
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: env-config
+              key: LOG_LEVEL
+        - name: METRICS_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: env-config
+              key: METRICS_ENABLED
+        - name: TRACING_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: env-config
+              key: TRACING_ENABLED
+        resources:
+          requests:
+            cpu: ${CPU_REQUEST:-50m}
+            memory: ${MEMORY_REQUEST:-128Mi}
+          limits:
+            cpu: ${CPU_LIMIT:-200m}
+            memory: ${MEMORY_LIMIT:-256Mi}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+      # Prometheus sidecar
+      - name: prometheus-sidecar
+        image: prom/prometheus:v2.45.0
+        args:
+        - "--config.file=/etc/prometheus/prometheus.yml"
+        - "--storage.tsdb.path=/prometheus"
+        - "--storage.tsdb.retention.time=1h"
+        - "--web.enable-lifecycle"
+        ports:
+        - containerPort: 9090
+          name: prometheus
+          protocol: TCP
+        volumeMounts:
+        - name: prometheus-config
+          mountPath: /etc/prometheus
+          readOnly: true
+        - name: prometheus-storage
+          mountPath: /prometheus
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9090
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: prometheus-config
+        configMap:
+          name: prometheus-sidecar-config
+      - name: prometheus-storage
+        emptyDir:
+          sizeLimit: 500Mi
+      imagePullSecrets:
+      - name: acr-secret
+---
+# Service definition
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: otel-demo-${ENVIRONMENT:-dev}
+  labels:
+    app: frontend
+    environment: ${ENVIRONMENT:-dev}
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+    protocol: TCP
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+---
+# HorizontalPodAutoscaler - Environment-specific
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: otel-demo-${ENVIRONMENT:-dev}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: ${HPA_MIN:-1}
+  maxReplicas: ${HPA_MAX:-2}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+---
+# PodDisruptionBudget - Environment-specific
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  namespace: otel-demo-${ENVIRONMENT:-dev}
+spec:
+  minAvailable: $((${REPLICAS:-1} > 1 ? ${REPLICAS:-1} - 1 : 1))
+  selector:
+    matchLabels:
+      app: frontend

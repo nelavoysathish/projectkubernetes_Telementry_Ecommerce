@@ -1,0 +1,242 @@
+# Kustomization Base Configuration
+# Place this file at: kustomize/base/kustomization.yaml
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: otel-demo
+
+commonLabels:
+  app.kubernetes.io/name: otel-demo
+  app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - configmap.yaml
+
+replicas:
+  - name: frontend
+    count: 1
+---
+
+# DEV Overlay - kustomize/overlays/dev/kustomization.yaml
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: otel-demo-dev
+
+bases:
+  - ../../base
+
+namePrefix: dev-
+
+commonLabels:
+  environment: dev
+
+commonAnnotations:
+  environment-type: development
+  notification-email: dev-team@example.com
+
+resources:
+  - namespace.yaml
+  - ingress-dev.yaml
+
+replicas:
+  - name: frontend
+    count: 1
+
+patches:
+  - target:
+      kind: Deployment
+      name: dev-frontend
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 128Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 50m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 200m
+      - op: replace
+        path: /spec/template/spec/containers/0/env/2/value
+        value: "http://otel-collector-dev:4318"
+
+configMapGenerator:
+  - name: env-config
+    behavior: create
+    literals:
+      - ENVIRONMENT=dev
+      - LOG_LEVEL=debug
+      - METRICS_ENABLED=true
+      - TRACING_ENABLED=true
+      - REPLICAS=1
+
+---
+
+# STAGING Overlay - kustomize/overlays/staging/kustomization.yaml
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: otel-demo-staging
+
+bases:
+  - ../../base
+
+namePrefix: staging-
+
+commonLabels:
+  environment: staging
+
+commonAnnotations:
+  environment-type: staging
+  notification-email: staging-team@example.com
+
+resources:
+  - namespace.yaml
+  - ingress-staging.yaml
+  - pdb.yaml
+
+replicas:
+  - name: frontend
+    count: 2
+
+patches:
+  - target:
+      kind: Deployment
+      name: staging-frontend
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 100m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 500m
+      - op: replace
+        path: /spec/template/spec/containers/0/env/2/value
+        value: "http://otel-collector-staging:4318"
+      - op: add
+        path: /spec/replicas
+        value: 2
+
+configMapGenerator:
+  - name: env-config
+    behavior: create
+    literals:
+      - ENVIRONMENT=staging
+      - LOG_LEVEL=info
+      - METRICS_ENABLED=true
+      - TRACING_ENABLED=true
+      - REPLICAS=2
+
+---
+
+# PRODUCTION Overlay - kustomize/overlays/prod/kustomization.yaml
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: otel-demo-prod
+
+bases:
+  - ../../base
+
+namePrefix: prod-
+
+commonLabels:
+  environment: prod
+
+commonAnnotations:
+  environment-type: production
+  notification-email: prod-team@example.com
+  backup: "daily"
+  sla: "99.95%"
+
+resources:
+  - namespace.yaml
+  - ingress-prod.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
+  - resource-quota.yaml
+  - limit-range.yaml
+
+replicas:
+  - name: frontend
+    count: 3
+
+patches:
+  - target:
+      kind: Deployment
+      name: prod-frontend
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 250m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 1000m
+      - op: replace
+        path: /spec/template/spec/containers/0/env/2/value
+        value: "http://otel-collector-prod:4318"
+      - op: add
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/affinity/podAntiAffinity/preferredDuringSchedulingIgnoredDuringExecution/0/weight
+        value: 100
+
+configMapGenerator:
+  - name: env-config
+    behavior: create
+    literals:
+      - ENVIRONMENT=prod
+      - LOG_LEVEL=warn
+      - METRICS_ENABLED=true
+      - TRACING_ENABLED=true
+      - REPLICAS=3
+
+secretGenerator:
+  - name: prod-secrets
+    behavior: create
+    envs:
+      - secrets.env
+
+---
+
+# Usage Examples:
+
+# Build and apply for dev environment:
+# kubectl kustomize overlays/dev | kubectl apply -f -
+
+# Build and apply for staging environment:
+# kubectl kustomize overlays/staging | kubectl apply -f -
+
+# Build and apply for production environment:
+# kubectl kustomize overlays/prod | kubectl apply -f -
+
+# Generate manifests without applying:
+# kubectl kustomize overlays/dev -o manifests.yaml
+
+# Validate Kustomize overlays:
+# kubectl kustomize overlays/dev > /dev/null && echo "Valid"
+# kubectl kustomize overlays/staging > /dev/null && echo "Valid"
+# kubectl kustomize overlays/prod > /dev/null && echo "Valid"

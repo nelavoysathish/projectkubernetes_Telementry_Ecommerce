@@ -1,0 +1,200 @@
+---
+# PeerAuthentication to enforce strict mTLS for all services
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: otel-demo
+spec:
+  mtls:
+    mode: STRICT
+---
+# AuthorizationPolicy for frontend service
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/istio-ingress/sa/default"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/*"]
+---
+# AuthorizationPolicy for payment service
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-payment
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: payment
+  rules:
+  - from:
+    - source:
+        namespaces: ["otel-demo"]
+    to:
+    - operation:
+        methods: ["POST"]
+        paths: ["/charge"]
+---
+# AuthorizationPolicy for cart service
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-cart
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: cart
+  rules:
+  - from:
+    - source:
+        namespaces: ["otel-demo"]
+    to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        paths: ["/cart*"]
+---
+# DestinationRule for frontend with connection pooling and outlier detection
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: frontend
+  namespace: otel-demo
+spec:
+  host: frontend
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minRequestVolume: 5
+      splitExternalLocalOriginErrors: true
+---
+# DestinationRule for payment service
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: payment
+  namespace: otel-demo
+spec:
+  host: payment
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 500
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 60s
+      maxEjectionPercent: 30
+---
+# DestinationRule for cart service
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: cart
+  namespace: otel-demo
+spec:
+  host: cart
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 75
+      http:
+        http1MaxPendingRequests: 75
+        http2MaxRequests: 750
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+---
+# RequestAuthentication for optional JWT validation
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: frontend-jwt
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  jwtRules:
+  - issuer: "https://example.com"
+    jwksUri: "https://example.com/.well-known/jwks.json"
+---
+# VirtualService for payment with canary deployment support
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: payment-vs
+  namespace: otel-demo
+spec:
+  hosts:
+  - payment
+  http:
+  - match:
+    - headers:
+        user-agent:
+          regex: ".*canary.*"
+    route:
+    - destination:
+        host: payment
+        subset: v2
+      weight: 100
+  - route:
+    - destination:
+        host: payment
+        subset: v1
+      weight: 95
+    - destination:
+        host: payment
+        subset: v2
+      weight: 5
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+---
+# VirtualService for cart
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: cart-vs
+  namespace: otel-demo
+spec:
+  hosts:
+  - cart
+  http:
+  - route:
+    - destination:
+        host: cart
+        port:
+          number: 8080
+    timeout: 20s
+    retries:
+      attempts: 2
+      perTryTimeout: 5s

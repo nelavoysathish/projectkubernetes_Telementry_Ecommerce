@@ -1,0 +1,99 @@
+---
+# ServiceMonitor for Prometheus to discover microservices
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-demo-frontend
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+---
+# ServiceMonitor for payment service
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-demo-payment
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: payment
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+---
+# ServiceMonitor for cart service
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-demo-cart
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: cart
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+---
+# ConfigMap for Prometheus sidecar configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-sidecar-config
+  namespace: otel-demo
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+    scrape_configs:
+    - job_name: 'localhost'
+      static_configs:
+      - targets: ['localhost:8080']
+        labels:
+          instance: 'app-metrics'
+    - job_name: 'istio-mesh'
+      kubernetes_sd_configs:
+      - role: endpoint
+        namespaces:
+          names:
+          - otel-demo
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex:.*;metrics
+---
+# MutatingWebhookConfiguration for Prometheus sidecar injection
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: prometheus-sidecar-injector
+webhooks:
+- name: prometheus.sidecar.inject
+  clientConfig:
+    service:
+      name: prometheus-injector
+      namespace: prometheus
+      path: "/inject"
+    caBundle: "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUN5RENDQWJHZ0F3SUJBZ0lCQVRBTkJna3Foa2lHOXcwQkFRc0ZBREJWTVFzd0NRWURWUVFHREFKVU1Rc3cKQ1FZRFZRUUhEQUpLTVFzd0NRWURWUVF5REFKa01Rc3dDUVlEVlFRZUV3SlFSVEF3SGhjTk1qQXhOVEl5TWpVdApSMjl2WjI1bElGOHlNREExTWpJeU5TMG5CZ05WQkN3d01RVTJRVEJ0VTBWeVFteHBibmt0VEhWVVpVZHdhVzR3CkdXRmtiV2x1UUd4aFkybHhRVzl3YkdWdVoyOWxMRVJUWHpFNU9EQkRCZ05WQkFzTEpua2ZibUZyWlhWMFBFVnAKUlhobGNtMVRhRmR1Ukhk dVFVQkJRVEF3SGhjTk1qQXhOVEl5TWpVdFIyOXZaMjVsSUY4eU1EQTFNakl5TlMwbgpCZ05WQkN3d01RVTJRVEJ0VTBWeVFteHBibmt0VEhWVVpVZHdhVzR3QmdZRFZRUVhEQVJGVjBSUFFVRlJRVUE0CkJnTlZCQlFMSWk1bmIyOW5iR1VnSRNBNVh3LS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQ=="
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  objectSelector:
+    matchLabels:
+      prometheus-sidecar: "true"
+  timeoutSeconds: 5
+  failurePolicy: Fail
