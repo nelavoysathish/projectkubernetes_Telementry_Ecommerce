@@ -1,0 +1,47 @@
+name: Build and Push Frontend to ACR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/frontend/**'
+
+env:
+  REGISTRY: nelavoyacr.azurecr.io
+  IMAGE_NAME: frontend
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Login to ACR
+      uses: azure/docker-login@v1
+      with:
+        login-server: nelavoyacr.azurecr.io
+        username: ${{ secrets.ACR_USERNAME }}
+        password: ${{ secrets.ACR_PASSWORD }}
+
+    - name: Build and Push image
+      run: |
+        IMAGE_TAG=${{ github.sha }}
+        docker build \
+          -f src/frontend/Dockerfile \
+          -t nelavoyacr.azurecr.io/frontend:$IMAGE_TAG \
+          -t nelavoyacr.azurecr.io/frontend:latest \
+          .
+        docker push nelavoyacr.azurecr.io/frontend:$IMAGE_TAG
+        docker push nelavoyacr.azurecr.io/frontend:latest
+
+    - name: Update GitOps repo
+      run: |
+        git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/nelavoysathish/projectkubernetes-gitops.git
+        cd projectkubernetes-gitops
+        sed -i "s|image: nelavoyacr.azurecr.io/frontend:.*|image: nelavoyacr.azurecr.io/frontend:${{ github.sha }}|" manifests/dev/frontend-deployment.yaml
+        git config user.email "nelavoysathishsre@gmail.com"
+        git config user.name "GitHub Actions"
+        git add .
+        git commit -m "Update frontend image to ${{ github.sha }}"
+        git push
